@@ -49,7 +49,7 @@
 #define SD_CS_PIN 5 ///< Default SD card chip select pin
 #endif
 #ifndef KNOWN_FILES_URL
-#define KNOWN_FILES_URL "https://github.com/jeff-hamm/bowie-phone/sample-sequence.json"
+#define KNOWN_FILES_URL "https://raw.githubusercontent.com/jeff-hamm/pheromone-dating/refs/heads/main/audio/game_sounds.json"
 #endif
 #ifndef USER_AGENT_HEADER
 #define USER_AGENT_HEADER "AudioFileManager/1.0"

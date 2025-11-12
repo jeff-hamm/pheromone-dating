@@ -2,16 +2,16 @@
   "yes": {
     "description": "Yes!",
     "type": "audio",
-    "path": "https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3"
+    "path": "https://raw.githubusercontent.com/jeff-hamm/pheromone-dating/refs/heads/main/audio/winning.mp3"
   },
   "no": {
     "description": "No!",
     "type": "audio",
-    "path": "https://archive.org/download/testmp3testfile/mpthreetest.mp3"
+    "path": "https://raw.githubusercontent.com/jeff-hamm/pheromone-dating/refs/heads/main/audio/losing_horns.mp3"
   },
   "locked_in": {
     "description": "Locked In!",
     "type": "audio",
-    "path": "https://archive.org/download/testmp3testfile/mpthreetest.mp3"
+    "path": "https://raw.githubusercontent.com/jeff-hamm/pheromone-dating/refs/heads/main/audio/locked_in.mp3"
   }
 }

@@ -16,6 +16,7 @@
 // ============================================================================
 #include <Arduino.h>
 #include "AudioTools/AudioLibs/AudioBoardStream.h"
+#include "AudioTools.h"
 
 // ============================================================================
 // CONSTANTS AND CONFIGURATION

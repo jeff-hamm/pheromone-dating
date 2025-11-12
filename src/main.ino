@@ -94,7 +94,7 @@ void setup()
     Logger.println("🔧 Allowing system to stabilize...");
     delay(3000);
     auto cfg = kit.defaultConfig(TX_MODE);
-    cfg.sd_active = false;
+    cfg.sd_active = true;
     if (!kit.begin(cfg))
     {
         Logger.println("❌ Failed to initialize AudioKit");

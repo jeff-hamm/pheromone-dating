@@ -75,7 +75,7 @@ static void saveVolumeToStorage(float volume)
 // PUBLIC FUNCTIONS
 // ============================================================================
 
-void initAudioFilePlayer(AudioSource &source, AudioStream &output, AudioDecoder &decoder)
+void initAudioFilePlayer(AudioSource &source, AudioStream &output, AudioDecoder &decoder, int sdCsPin, bool mmcsSupport)
 {
     // Check if already initialized
     if (audioPlayer != nullptr)
@@ -90,7 +90,7 @@ void initAudioFilePlayer(AudioSource &source, AudioStream &output, AudioDecoder 
     audioPlayer = new AudioPlayer(source, output, decoder);
 
     // Initialize audio file manager
-    initializeAudioFileManager();
+    initializeAudioFileManager(sdCsPin, mmcsSupport);
     
     // Load volume from storage
     currentVolume = loadVolumeFromStorage();
@@ -129,9 +129,16 @@ float getVolume()
 }
 bool startAudioPlayback(const char* filePath)
 {
-    if (!audioPlayer || !filePath || isPlayingAudio)
+    if (!audioPlayer || !filePath)
     {
         return false;
+    }
+    
+    // Stop any currently playing audio first
+    if (isPlayingAudio)
+    {
+        Serial.println("⏹️ Stopping current audio to play new file");
+        stopAudioPlayback();
     }
     
     Serial.printf("🎵 Starting audio playback: %s\n", filePath);
@@ -196,15 +203,21 @@ bool playAudioByKey(const char* key)
         return false;
     }
     
+    Serial.printf("🎯 playAudioByKey called for: %s\n", key);
+    
     // Process the audio key to get the file path
     const char* filePath = processAudioKey(key);
     
     if (!filePath)
     {
-        Serial.printf("⚠️ Audio file not available for key: %s\n", key);
+        Serial.printf("⚠️ processAudioKey returned NULL for key: %s\n", key);
         return false;
     }
     
+    Serial.printf("📂 Got file path: %s\n", filePath);
+    
     // Start playback
-    return startAudioPlayback(filePath);
+    bool result = startAudioPlayback(filePath);
+    Serial.printf("🎬 startAudioPlayback returned: %s\n", result ? "true" : "false");
+    return result;
 }

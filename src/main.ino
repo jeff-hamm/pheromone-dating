@@ -9,12 +9,20 @@
 #include "wifi_manager.h"
 #include "logging.h"
 #include <SD.h>
+#include <SD_MMC.h>
+#include <Preferences.h>
 
-#define PLAYER_1_YES 1
-#define PLAYER_2_YES 2
-#define PLAYER_1_NO 3
-#define PLAYER_2_NO 4
-#define RESET_GAME 5
+// Firmware version tracking for cache reset on new uploads
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "1.0.0"  // Update this when you want to force cache clear
+#endif
+
+// ESP32 Audio Kit typically has buttons 2-6 available (button 1 may be reserved)
+#define PLAYER_1_YES 6  // Left YES button
+#define PLAYER_1_NO 3   // Left NO button
+#define PLAYER_2_YES 4  // Right YES button
+#define PLAYER_2_NO 5   // Right NO button
+#define RESET_GAME 2    // Reset/Mode button
 
 #ifndef GAME_TIMEOUT_MS
 #define GAME_TIMEOUT_MS 60000  // 60 seconds default timeout
@@ -30,6 +38,10 @@
 
 #ifndef LOCKED_IN_SOUND_KEY
 #define LOCKED_IN_SOUND_KEY "locked_in"
+#endif
+
+#ifndef RESET_GAME_SOUND_KEY
+#define RESET_GAME_SOUND_KEY "reset_game"
 #endif
 
 AudioBoardStream kit(AudioKitEs8388V1); // Audio source
@@ -61,6 +73,48 @@ enum GameState {
 
 GameState gameState = WAITING_FOR_PLAYERS;
 unsigned long firstPressTime = 0;
+unsigned long lastLedToggleTime = 0;
+bool ledState = false;
+bool warningActive = false;
+
+// D1, D2, D3 LED pins (common on ESP32 Audio Kit v2.2 A436)
+// Trying alternate GPIO pins that are typically available
+#define LED_D1 12  // Green LED (alternate pin)
+#define LED_D2 13  // Red LED (alternate pin)
+#define LED_D3 14  // Blue LED (alternate pin)
+
+// Firmware version tracker
+Preferences preferences;
+
+/**
+ * @brief Check if firmware version has changed and reset cache if needed
+ * 
+ * Compares stored firmware version with current version. If different,
+ * clears audio cache to ensure fresh download with new firmware.
+ */
+void checkFirmwareVersionAndResetCache() {
+    preferences.begin("firmware", false);
+    
+    String storedVersion = preferences.getString("version", "");
+    String currentVersion = String(FIRMWARE_VERSION);
+    
+    if (storedVersion != currentVersion) {
+        Logger.printf("🔄 Firmware version changed: %s -> %s\n", 
+                     storedVersion.c_str(), currentVersion.c_str());
+        Logger.println("🗑️ Clearing audio cache due to firmware update...");
+        
+        // Clear the audio cache
+        clearAudioKeys();
+        
+        // Store new version
+        preferences.putString("version", currentVersion);
+        Logger.printf("✅ Cache cleared and version updated to %s\n", currentVersion.c_str());
+    } else {
+        Logger.printf("ℹ️ Firmware version unchanged: %s\n", currentVersion.c_str());
+    }
+    
+    preferences.end();
+}
 
 // WiFi connected callback - downloads audio sequences when WiFi connects
 void onWiFiConnected()
@@ -88,13 +142,37 @@ void setup()
     Logger.addLogger(Serial);
     
     Logger.printf("=== Starting ===\n");
-    AudioToolsLogger.begin(Serial, AudioToolsLogLevel::Info); // setup Audiokit
+    AudioToolsLogger.begin(Serial, AudioToolsLogLevel::Info);
+
+    // Check firmware version and reset cache if changed
+    checkFirmwareVersionAndResetCache();
+
+    // Initialize SD_MMC in 1-bit mode (more reliable on some boards)
+    Logger.println("🔧 Initializing SD_MMC (1-bit mode)...");
+    if (!SD_MMC.begin("/sdcard", true)) {  // true = 1-bit mode
+        Logger.println("❌ Failed to initialize SD_MMC");
+    } else if (SD_MMC.cardType() == CARD_NONE) {
+        Logger.println("❌ No SD card detected");
+    } else {
+        uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+        Logger.printf("✅ SD_MMC initialized (1-bit mode, %lluMB)\n", cardSize);
+    }
 
     // Add more startup delay for system stabilization
     Logger.println("🔧 Allowing system to stabilize...");
     delay(3000);
+    
+    // Initialize external LEDs (D1, D2, D3) - turn them off initially
+    pinMode(LED_D1, OUTPUT);
+    pinMode(LED_D2, OUTPUT);
+    pinMode(LED_D3, OUTPUT);
+    digitalWrite(LED_D1, LOW);
+    digitalWrite(LED_D2, LOW);
+    digitalWrite(LED_D3, LOW);
+    Logger.println("✅ External LEDs initialized (off)");
+    
     auto cfg = kit.defaultConfig(TX_MODE);
-    cfg.sd_active = true;
+    cfg.sd_active = false;  // Don't let AudioKit re-initialize SD (we're using SD_MMC)
     if (!kit.begin(cfg))
     {
         Logger.println("❌ Failed to initialize AudioKit");
@@ -102,7 +180,9 @@ void setup()
     else {
         Logger.println("✅ AudioKit initialized successfully");
     }
-    initAudioFilePlayer(source, kit, decoder);
+    
+    // Initialize with SD_MMC support enabled (true)
+    initAudioFilePlayer(source, kit, decoder, 0, true);  // CS pin=0 (unused for SD_MMC)
 
     Logger.println("🎤 Audio system ready!");
 
@@ -116,8 +196,30 @@ void setup()
     kit.addAction(kit.getKey(PLAYER_1_NO), buttonPressed);
     kit.addAction(kit.getKey(PLAYER_2_NO), buttonPressed);
     kit.addAction(kit.getKey(RESET_GAME), [](bool active, int pin, void *ptr) {
-        Logger.println("🔄 Reset button pressed - resetting game");
-        resetGame();
+        if (gameState == WAITING_FOR_PLAYERS && firstPressTime > 0) {
+            // Calculate elapsed time
+            unsigned long elapsed = millis() - firstPressTime;
+            unsigned long remaining = 0;
+            
+            // Only extend if less than 119 seconds have elapsed
+            if (elapsed < 119000) {  // 119 seconds max
+                // Calculate how much time we can add (max 60 seconds, but cap at 119 total)
+                unsigned long maxExtension = 119000 - elapsed;
+                unsigned long extension = min(60000UL, maxExtension);
+                
+                // Move the start time back by the extension amount
+                firstPressTime -= extension;
+                remaining = (119000 - (millis() - firstPressTime)) / 1000;
+                
+                Logger.printf("🔄 Reset button pressed - extending game by %lu seconds (max %lu seconds remaining)\n", 
+                             extension / 1000, remaining);
+                playAudioByKey(RESET_GAME_SOUND_KEY);
+            } else {
+                Logger.println("⏰ Cannot extend - maximum 119 seconds already reached");
+            }
+        } else {
+            Logger.println("⚠️ Reset button pressed but no active game to extend");
+        }
     });
     Logger.println("✅ Startup complete!"); 
 }
@@ -174,6 +276,70 @@ void loop()
     processAudioFile();
     kit.processActions();
     processGame();
+    processLedWarning();
+}
+
+void processLedWarning() {
+    // Only flash LEDs when waiting for players and game is active
+    if (gameState == WAITING_FOR_PLAYERS && firstPressTime > 0) {
+        unsigned long elapsed = millis() - firstPressTime;
+        unsigned long remaining = GAME_TIMEOUT_MS - elapsed;
+        
+        // Start flashing when 10 seconds or less remain
+        if (remaining <= 10000) {
+            if (!warningActive) {
+                warningActive = true;
+                Logger.println("⚠️ WARNING: 10 seconds remaining - LEDs flashing!");
+            }
+            
+            // Flash LEDs every 500ms
+            if (millis() - lastLedToggleTime >= 500) {
+                ledState = !ledState;
+                lastLedToggleTime = millis();
+                
+                // Set all available board LEDs to the same state
+                for (int i = 0; i < 10; i++) {  // Try up to 10 LEDs
+                    int ledPin = kit.pinLed(i);
+                    if (ledPin >= 0) {  // Valid pin exists
+                        digitalWrite(ledPin, ledState ? HIGH : LOW);
+                    }
+                }
+                
+                // Also flash external D1, D2, D3 LEDs
+                digitalWrite(LED_D1, ledState ? HIGH : LOW);
+                digitalWrite(LED_D2, ledState ? HIGH : LOW);
+                digitalWrite(LED_D3, ledState ? HIGH : LOW);
+            }
+        } else if (warningActive) {
+            // Turn off warning when time is extended
+            warningActive = false;
+            ledState = false;
+            for (int i = 0; i < 10; i++) {
+                int ledPin = kit.pinLed(i);
+                if (ledPin >= 0) {
+                    digitalWrite(ledPin, LOW);
+                }
+            }
+            // Turn off external LEDs too
+            digitalWrite(LED_D1, LOW);
+            digitalWrite(LED_D2, LOW);
+            digitalWrite(LED_D3, LOW);
+        }
+    } else if (warningActive) {
+        // Game ended or reset - turn off LEDs
+        warningActive = false;
+        ledState = false;
+        for (int i = 0; i < 10; i++) {
+            int ledPin = kit.pinLed(i);
+            if (ledPin >= 0) {
+                digitalWrite(ledPin, LOW);
+            }
+        }
+        // Turn off external LEDs
+        digitalWrite(LED_D1, LOW);
+        digitalWrite(LED_D2, LOW);
+        digitalWrite(LED_D3, LOW);
+    }
 }
 
 

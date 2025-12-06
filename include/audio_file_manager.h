@@ -45,9 +45,6 @@
 #ifndef MAX_FILENAME_LENGTH
 #define MAX_FILENAME_LENGTH 64      ///< Maximum length for generated filenames
 #endif
-#ifndef SD_CS_PIN
-#define SD_CS_PIN 5 ///< Default SD card chip select pin
-#endif
 #ifndef KNOWN_FILES_URL
 #define KNOWN_FILES_URL "https://raw.githubusercontent.com/jeff-hamm/pheromone-dating/refs/heads/main/audio/game_sounds.json"
 #endif
@@ -84,7 +81,7 @@ struct AudioFile
  * Loads cached sequences from SD card if available.
  * Call this during setup().
  */
-void initializeAudioFileManager();
+void initializeAudioFileManager(int sdCsPin, bool mmc);
 
 /**
  * @brief Download known sequences from remote server

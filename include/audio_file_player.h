@@ -43,7 +43,7 @@
  * Sets up the audio player with the provided source and decoder.
  * Call this after initializeAudioFileManager().
  */
-void initAudioFilePlayer(AudioSource &source, AudioStream &output, AudioDecoder &decoder);
+void initAudioFilePlayer(AudioSource &source, AudioStream &output, AudioDecoder &decoder, int sdCsPin, bool mmcsSupport);
 
 /**
  * @brief Start playing an audio file

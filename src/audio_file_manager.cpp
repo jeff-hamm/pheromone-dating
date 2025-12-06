@@ -12,7 +12,16 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <SD.h>
+#include <SD_MMC.h>
 #include <FS.h>
+
+// Helper macros for SD vs SD_MMC abstraction
+#define SD_CARD (sdMmmcSupport ? (fs::FS&)SD_MMC : (fs::FS&)SD)
+#define SD_EXISTS(path) (sdMmmcSupport ? SD_MMC.exists(path) : SD.exists(path))
+#define SD_OPEN(path, mode) (sdMmmcSupport ? SD_MMC.open(path, mode) : SD.open(path, mode))
+#define SD_MKDIR(path) (sdMmmcSupport ? SD_MMC.mkdir(path) : SD.mkdir(path))
+#define SD_REMOVE(path) (sdMmmcSupport ? SD_MMC.remove(path) : SD.remove(path))
+
 
 // ============================================================================
 // STRUCTURES
@@ -37,6 +46,8 @@ static AudioFile knownFiles[MAX_KNOWN_SEQUENCES];
 static int knownSequenceCount = 0;
 static unsigned long lastCacheTime = 0;
 static bool sdCardInitialized = false;
+static int sdCardCsPin = 13; // SD card chip select pin
+static bool sdMmmcSupport = false; // MMC support flag
 
 // Download queue management
 static AudioDownloadItem downloadQueue[MAX_DOWNLOAD_QUEUE];
@@ -60,27 +71,44 @@ static bool initializeSDCard()
     
     Serial.println("🔧 Initializing SD card...");
     
-    if (!SD.begin(SD_CS_PIN))
+    if (sdMmmcSupport)
     {
-        Serial.println("❌ SD card initialization failed");
-        return false;
+        // Using SD_MMC mode (SDMMC interface)
+        uint8_t cardType = SD_MMC.cardType();
+        if (cardType == CARD_NONE)
+        {
+            Serial.println("❌ No SD_MMC card detected");
+            return false;
+        }
+        
+        uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+        Serial.printf("✅ SD_MMC Card Size: %lluMB\n", cardSize);
+        sdCardInitialized = true;
+        return true;
     }
-    
-    uint8_t cardType = SD.cardType();
-    if (cardType == CARD_NONE)
+    else
     {
-        Serial.println("❌ No SD card attached");
-        return false;
+        // Using SD mode (SPI interface)
+        if (!SD.begin(sdCardCsPin))
+        {
+            Serial.println("❌ SD card initialization failed");
+            return false;
+        }
+        delay(1000);
+        uint8_t cardType = SD.cardType();
+        if (cardType == CARD_NONE)
+        {
+            Serial.println("❌ No SD card attached");
+            return false;
+        }
+        
+        uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+        Serial.printf("✅ SD Card Size: %lluMB\n", cardSize);
+        sdCardInitialized = true;
+        return true;
     }
-    
-    Serial.printf("✅ SD card initialized (Type: %s)\n", 
-                 cardType == CARD_MMC ? "MMC" : 
-                 cardType == CARD_SD ? "SDSC" : 
-                 cardType == CARD_SDHC ? "SDHC" : "Unknown");
-    
-    sdCardInitialized = true;
-    return true;
 }
+
 
 /**
  * @brief Convert URL to filesystem-safe filename
@@ -143,7 +171,7 @@ static bool urlToFilename(const char* url, char* filename)
         char testPath[128];
         snprintf(testPath, sizeof(testPath), "%s/%s", AUDIO_FILES_DIR, baseFilename);
         
-        if (SD.exists(testPath))
+        if (SD_EXISTS(testPath))
         {
             // File exists, add a counter suffix
             for (int counter = 1; counter < 1000; counter++)
@@ -151,7 +179,7 @@ static bool urlToFilename(const char* url, char* filename)
                 snprintf(filename, MAX_FILENAME_LENGTH, "audio_%08lx_%d.mp3", hash, counter);
                 snprintf(testPath, sizeof(testPath), "%s/%s", AUDIO_FILES_DIR, filename);
                 
-                if (!SD.exists(testPath))
+                if (!SD_EXISTS(testPath))
                 {
                     // Found an unused filename
                     return true;
@@ -208,7 +236,7 @@ static bool audioFileExists(const char* url)
         return false;
     }
     
-    return SD.exists(localPath);
+    return SD_EXISTS(localPath);
 }
 
 /**
@@ -293,9 +321,9 @@ static bool processDownloadQueue()
     item->inProgress = true;
     
     // Ensure audio directory exists
-    if (!SD.exists(AUDIO_FILES_DIR))
+    if (!SD_EXISTS(AUDIO_FILES_DIR))
     {
-        if (!SD.mkdir(AUDIO_FILES_DIR))
+        if (!SD_MKDIR(AUDIO_FILES_DIR))
         {
             Serial.println("❌ Failed to create audio directory");
             item->inProgress = false;
@@ -317,7 +345,7 @@ static bool processDownloadQueue()
         int contentLength = http.getSize();
         
         // Create file for writing
-        File audioFile = SD.open(item->localPath, FILE_WRITE);
+        File audioFile = SD_OPEN(item->localPath, FILE_WRITE);
         if (!audioFile)
         {
             Serial.printf("❌ Failed to create file: %s\n", item->localPath);
@@ -390,7 +418,7 @@ static bool isCacheStale()
     }
     
     // Read cache timestamp from file
-    File timestampFile = SD.open(CACHE_TIMESTAMP_FILE, FILE_READ);
+    File timestampFile = SD_OPEN(CACHE_TIMESTAMP_FILE, FILE_READ);
     if (!timestampFile)
     {
         Serial.println("ℹ️ No cache timestamp file found");
@@ -446,7 +474,7 @@ static bool saveKnownSequencesToSDCard()
     }
     
     // Open file for writing
-    File sequenceFile = SD.open(AUDIO_JSON_FILE, FILE_WRITE);
+    File sequenceFile = SD_OPEN(AUDIO_JSON_FILE, FILE_WRITE);
     if (!sequenceFile)
     {
         Serial.println("❌ Failed to open sequences file for writing");
@@ -464,7 +492,7 @@ static bool saveKnownSequencesToSDCard()
     }
     
     // Save timestamp to separate file
-    File timestampFile = SD.open(CACHE_TIMESTAMP_FILE, FILE_WRITE);
+    File timestampFile = SD_OPEN(CACHE_TIMESTAMP_FILE, FILE_WRITE);
     if (timestampFile)
     {
         timestampFile.print(millis());
@@ -497,14 +525,14 @@ static bool loadKnownSequencesFromSDCard()
     }
     
     // Check if sequences file exists
-    if (!SD.exists(AUDIO_JSON_FILE))
+    if (!SD_EXISTS(AUDIO_JSON_FILE))
     {
         Serial.println("ℹ️ No cached sequences found on SD card");
         return false;
     }
     
     // Open sequences file
-    File sequenceFile = SD.open(AUDIO_JSON_FILE, FILE_READ);
+    File sequenceFile = SD_OPEN(AUDIO_JSON_FILE, FILE_READ);
     if (!sequenceFile)
     {
         Serial.println("❌ Failed to open sequences file for reading");
@@ -522,7 +550,7 @@ static bool loadKnownSequencesFromSDCard()
     }
     
     // Load cache timestamp
-    File timestampFile = SD.open(CACHE_TIMESTAMP_FILE, FILE_READ);
+    File timestampFile = SD_OPEN(CACHE_TIMESTAMP_FILE, FILE_READ);
     if (timestampFile)
     {
         String timestampStr = timestampFile.readString();
@@ -578,11 +606,13 @@ static bool loadKnownSequencesFromSDCard()
 // PUBLIC FUNCTIONS
 // ============================================================================
 
-void initializeAudioFileManager()
+void initializeAudioFileManager(int sdCsPin, bool mmcsSupport)
 {
     Serial.println("🔧 Initializing Known Sequence Processor...");
     
     // Initialize variables
+    sdMmmcSupport = mmcsSupport;
+    sdCardCsPin = sdCsPin;
     knownSequenceCount = 0;
     lastCacheTime = 0;
     sdCardInitialized = false;
@@ -903,18 +933,18 @@ void clearAudioKeys()
         bool sequencesRemoved = false;
         bool timestampRemoved = false;
         
-        if (SD.exists(AUDIO_JSON_FILE))
+        if (SD_EXISTS(AUDIO_JSON_FILE))
         {
-            sequencesRemoved = SD.remove(AUDIO_JSON_FILE);
+            sequencesRemoved = SD_REMOVE(AUDIO_JSON_FILE);
         }
         else
         {
             sequencesRemoved = true; // File doesn't exist, consider it "removed"
         }
         
-        if (SD.exists(CACHE_TIMESTAMP_FILE))
+        if (SD_EXISTS(CACHE_TIMESTAMP_FILE))
         {
-            timestampRemoved = SD.remove(CACHE_TIMESTAMP_FILE);
+            timestampRemoved = SD_REMOVE(CACHE_TIMESTAMP_FILE);
         }
         else
         {
